@@ -1,8 +1,7 @@
-import sqlite3
-import json
-from datetime import datetime
 
 import streamlit as st
+from supabase import create_client
+
 
 # Configuración de la aplicación
 st.set_page_config(
@@ -11,42 +10,52 @@ st.set_page_config(
     layout="centered"
 )
 
-DB_PATH = "diagnostico.db"
+
+# Conexión con Supabase
+@st.cache_resource
+def conectar_supabase():
+    url = st.secrets["SUPABASE_URL"]
+    clave = st.secrets["SUPABASE_KEY"]
+    return create_client(url, clave)
 
 
-# Crear la base de datos
-def crear_base_datos():
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS respuestas (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                fecha TEXT NOT NULL,
-                empresa TEXT NOT NULL,
-                sector TEXT NOT NULL,
-                tamano TEXT NOT NULL,
-                necesidades TEXT NOT NULL,
-                sistemas TEXT NOT NULL,
-                nivel TEXT NOT NULL
-            )
-        """)
+try:
+    supabase = conectar_supabase()
+except Exception:
+    st.error(
+        "No se pudo conectar con la base de datos. "
+        "Verifica la configuración de Secrets en Streamlit."
+    )
+    st.stop()
 
 
 # Guardar un diagnóstico
 def guardar_respuesta(datos):
-    with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.execute("""
-            INSERT INTO respuestas (
-                fecha, empresa, sector, tamano,
-                necesidades, sistemas, nivel
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, datos)
+    respuesta = (
+        supabase.table("respuestas")
+        .insert(datos)
+        .execute()
+    )
 
-        return cursor.lastrowid
+    if not respuesta.data:
+        raise RuntimeError("No se recibió confirmación del registro.")
+
+    return respuesta.data[0]["id"]
 
 
-# Inicializar la base de datos
-crear_base_datos()
+# Consultar los diagnósticos registrados
+def obtener_respuestas():
+    respuesta = (
+        supabase.table("respuestas")
+        .select(
+            "id, fecha, empresa, sector, tamano, "
+            "necesidades, sistemas, nivel"
+        )
+        .order("id", desc=True)
+        .execute()
+    )
+
+    return respuesta.data or []
 
 
 # Título y descripción
@@ -147,68 +156,68 @@ if enviar:
 
     else:
         try:
-            fecha = datetime.now().astimezone().isoformat(
-                timespec="seconds"
-            )
-
-            datos = (
-                fecha,
-                empresa,
-                sector,
-                tamano,
-                json.dumps(necesidades, ensure_ascii=False),
-                sistemas,
-                nivel
-            )
+            datos = {
+                "empresa": empresa,
+                "sector": sector,
+                "tamano": tamano,
+                "necesidades": necesidades,
+                "sistemas": sistemas,
+                "nivel": nivel
+            }
 
             registro_id = guardar_respuesta(datos)
 
             st.success(
-                f"¡Diagnóstico guardado! Número de registro: "
-                f"{registro_id}"
+                f"¡Diagnóstico guardado en la nube! "
+                f"Número de registro: {registro_id}"
             )
 
-        except sqlite3.Error:
+        except Exception:
             st.error(
                 "No se pudo guardar el diagnóstico. "
-                "Inténtalo nuevamente."
+                "Verifica la conexión y la configuración "
+                "de la base de datos."
             )
 
 
-# Mostrar registros guardados
+# Mostrar registros guardados en Supabase
 st.divider()
 st.subheader("Diagnósticos registrados")
 
-with sqlite3.connect(DB_PATH) as conn:
-    conn.row_factory = sqlite3.Row
+try:
+    registros = obtener_respuestas()
 
-    registros = conn.execute("""
-        SELECT id, fecha, empresa, sector, tamano,
-               necesidades, sistemas, nivel
-        FROM respuestas
-        ORDER BY id DESC
-    """).fetchall()
+    if registros:
+        filas = []
 
-if registros:
-    filas = []
+        for registro in registros:
+            fila = dict(registro)
 
-    for r in registros:
-        fila = dict(r)
-        fila["necesidades"] = ", ".join(
-            json.loads(fila["necesidades"])
+            necesidades_guardadas = fila.get("necesidades") or []
+
+            if isinstance(necesidades_guardadas, list):
+                fila["necesidades"] = ", ".join(
+                    necesidades_guardadas
+                )
+
+            filas.append(fila)
+
+        st.dataframe(
+            filas,
+            use_container_width=True,
+            hide_index=True
         )
-        filas.append(fila)
 
-    st.dataframe(
-        filas,
-        use_container_width=True,
-        hide_index=True
-    )
+        st.caption(f"Total de registros: {len(filas)}")
 
-    st.caption(f"Total de registros: {len(filas)}")
+    else:
+        st.info(
+            "Todavía no hay registros. "
+            "Completa el formulario para comenzar."
+        )
 
-else:
-    st.info(
-        "Todavía no hay registros. "
-        "Completa el formulario para comenzar."
+except Exception:
+    st.error(
+        "No se pudieron consultar los diagnósticos. "
+        "Verifica la conexión y los permisos de la base de datos."
     )
